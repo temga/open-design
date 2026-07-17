@@ -11369,7 +11369,15 @@ export async function startServer({
       enabledExternalMcp.length > 0 &&
       def.externalMcpInjection === 'acp-merge'
     ) {
-      const acpExternal = buildAcpMcpServers(enabledExternalMcp);
+      // Gate non-stdio forwarding on `mcpDiscovery: 'mature-acp'` — only
+      // agents that advertise full MCP transport support receive HTTP/SSE
+      // servers; others get stdio-only (the previous behaviour).
+      const supportsAllTransports = def.mcpDiscovery === 'mature-acp';
+      const acpExternal = supportsAllTransports
+        ? buildAcpMcpServers(enabledExternalMcp, oauthTokensForSpawn)
+        : buildAcpMcpServers(
+            enabledExternalMcp.filter((s) => s.transport === 'stdio'),
+          );
       mcpServers.push(...acpExternal);
     }
     // OpenCode: serialise enabled MCP servers into its `mcp` config schema

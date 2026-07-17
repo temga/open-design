@@ -4365,7 +4365,7 @@ export const en: Dict = {
   'settings.customInstructionsDesc': 'Fixed instructions Open Design follows in every chat. These are not saved memories; use Memory for facts, preferences, and project context.',
   'mcpClient.forwardedToLabel': 'Forwarded to:',
   'mcpClient.notForwardedToLabel': 'Not forwarded to:',
-  'mcpClient.forwardedAcpNote': 'ACP adapters marked stdio only receive stdio MCP servers from this list; HTTP and SSE entries are dropped at spawn time.',
+  'mcpClient.forwardedAcpNote': 'ACP adapters marked stdio only receive stdio MCP servers from this list; HTTP and SSE entries are dropped at spawn time. Adapters with full MCP support (Hermes, Kimi, Trae CLI, Reasonix) receive all transports.',
   'mcpClient.notForwardedNote': 'For those agents, configure MCP servers in the agent\'s own config file (e.g. ~/.codex/config.toml, ~/.gemini/settings.json); the servers below are silently unused there.',
 
   // Design systems library + extraction

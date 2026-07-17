@@ -143,6 +143,13 @@ export interface AgentInfo {
     | 'opencode-env-content'
     | 'mimo-env-content';
   /**
+   * MCP discovery mode for the runtime. `'mature-acp'` means the ACP agent
+   * supports the full MCP protocol including McpServerHttp / McpServerSse
+   * (not just stdio). The settings UI uses this to distinguish agents that
+   * receive all transports from those that only receive stdio.
+   */
+  mcpDiscovery?: string;
+  /**
    * When `false`, the Settings model picker hides the "Custom (fill below)"
    * option and the free-text input. Use this for agents whose CLI doesn't
    * accept a model id (e.g. Antigravity `agy` has no `--model` flag yet —

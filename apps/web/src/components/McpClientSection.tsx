@@ -1439,32 +1439,31 @@ function McpAgentSupportBanner({ agents }: { agents: AgentInfo[] }) {
     (a) => !a.externalMcpInjection,
   );
   if (supported.length === 0 && unsupported.length === 0) return null;
-  // ACP adapters (Hermes / Kimi / Kilo / Kiro / Vibe / Devin) currently
-  // accept stdio MCP servers only — `buildAcpMcpServers()` in
-  // `apps/daemon/src/mcp-config.ts` filters to `transport === 'stdio'`
-  // because the ACP `mcpServers` descriptor itself has no slot for
-  // HTTP / SSE entries. Tag those runtimes inline so the banner does
-  // not silently claim full forwarding for HTTP MCP servers, which
-  // would re-introduce the very silent-failure UX we are removing.
+  // ACP adapters without `mcpDiscovery: 'mature-acp'` only accept stdio MCP
+  // servers. Tag those runtimes inline so the banner does not silently claim
+  // full forwarding for HTTP MCP servers.
   const renderNames = (list: AgentInfo[]) =>
     list
       .slice()
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((a) =>
-        a.externalMcpInjection === 'acp-merge'
+        a.externalMcpInjection === 'acp-merge' &&
+        a.mcpDiscovery !== 'mature-acp'
           ? `${a.name} (stdio only)`
           : a.name,
       )
       .join(' · ');
-  const hasAcpSupported = supported.some(
-    (a) => a.externalMcpInjection === 'acp-merge',
+  const hasAcpStdioOnly = supported.some(
+    (a) =>
+      a.externalMcpInjection === 'acp-merge' &&
+      a.mcpDiscovery !== 'mature-acp',
   );
   return (
     <div className="mcp-agent-support">
       {supported.length > 0 ? (
         <p className="hint mcp-agent-support-line">
           <strong>{t('mcpClient.forwardedToLabel')}</strong> {renderNames(supported)}.
-          {hasAcpSupported ? <> {t('mcpClient.forwardedAcpNote')}</> : null}
+          {hasAcpStdioOnly ? <> {t('mcpClient.forwardedAcpNote')}</> : null}
         </p>
       ) : null}
       {unsupported.length > 0 ? (
