@@ -275,7 +275,9 @@ export async function createHeadlessRenderer(): Promise<HeadlessRenderer> {
 
       // Stitch if requested (image export of a deck)
       if (input.stitch && input.outputDir && slideFiles.length > 1) {
-        // For stitching, reveal all slides stacked vertically and take a fullPage shot
+        // For stitching, reveal all slides stacked vertically and take a fullPage shot.
+        // Override position to relative and clear inset/stretch so slides stack
+        // top-to-bottom instead of overlapping at the same position.
         await page.evaluate(() => {
           const slides = Array.prototype.slice
             .call(document.querySelectorAll('.slide, [data-screen-label], .deck-slide, .ppt-slide'))
@@ -290,10 +292,19 @@ export async function createHeadlessRenderer(): Promise<HeadlessRenderer> {
             el.style.setProperty("visibility", "visible", "important");
             el.style.setProperty("display", "flex", "important");
             el.style.setProperty("position", "relative", "important");
+            el.style.setProperty("inset", "auto", "important");
+            el.style.setProperty("width", "100%", "important");
+            el.style.setProperty("height", "auto", "important");
+            el.style.setProperty("min-height", "100vh", "important");
             el.style.setProperty("z-index", "999", "important");
             activeClasses.forEach((c) => el.classList.add(c));
             activeAttributes.forEach((a) => el.setAttribute(a, ""));
           });
+          // Ensure the deck container and body allow vertical growth
+          const deck = document.querySelector('.deck');
+          if (deck) (deck as HTMLElement).style.setProperty("height", "auto", "important");
+          document.body.style.setProperty("overflow", "visible", "important");
+          document.documentElement.style.setProperty("overflow", "visible", "important");
         });
         const outPath = join(input.outputDir, "stitched.png");
         await page.screenshot({ path: outPath, type: "png", fullPage: true });
