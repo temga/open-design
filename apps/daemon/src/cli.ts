@@ -469,7 +469,7 @@ async function runAgent(args) {
 
 const EXPORT_STRING_FLAGS = new Set([
   'daemon-url', 'project', 'format', 'out', 'output', 'image-format', 'title', 'file',
-  'workspace', 'workspace-member',
+  'workspace', 'workspace-member', 'slide',
 ]);
 const EXPORT_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'deck', 'page', 'no-deck']);
 // EXPORT_FORMATS / EXPORT_IMAGE_FORMATS are the shared contract DTO (single
@@ -492,6 +492,7 @@ Options:
   --image-format <fmt>     png | jpeg (for --format image)
   --deck                   Treat the artifact as a multi-slide deck
   --page, --no-deck        Treat the artifact as a normal scrollable page
+  --slide <n>              Export a specific slide (0-based index, deck mode only)
   --title <title>          Title used for metadata / default filename
   --workspace <id>        Explicit Workspace id for a bound project
   --workspace-member <id> Explicit Workspace member id for a bound project
@@ -502,6 +503,7 @@ Examples:
   od export index.html --project p1 --format pdf --out page.pdf
   od export index.html --project p1 --format html --out standalone.html
   od export slide.html --project p1 --format image --image-format png --out slide.png
+  od export deck.html --project p1 --format image --slide 2 --out slide3.png
   od export deck.html --project p1 --format pptx --out deck.pptx`);
 }
 
@@ -565,6 +567,7 @@ async function runExport(args) {
     format,
     deck: deckMode,
     ...(format === 'image' && flags['image-format'] ? { imageFormat: flags['image-format'] } : {}),
+    ...(flags.slide != null && /^\d+$/.test(String(flags.slide)) ? { index: parseInt(String(flags.slide), 10) } : {}),
     ...(flags.title ? { title: flags.title } : {}),
   });
   let resp;

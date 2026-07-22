@@ -6,6 +6,7 @@ export interface ExportCliRequestOptions {
   deck?: boolean;
   imageFormat?: ExportImageFormat;
   title?: string;
+  index?: number;
 }
 
 export interface ExportCliDeckModeOptions {
@@ -41,6 +42,7 @@ export function buildExportCliRequestBody(options: ExportCliRequestOptions): Rec
     // chooses deck/page mode so the daemon can still auto-detect by default.
     ...(deck !== undefined ? { deck } : {}),
     ...(options.format === "image" && options.imageFormat ? { imageFormat: options.imageFormat } : {}),
+    ...(typeof options.index === "number" ? { index: options.index } : {}),
     ...(options.title ? { title: options.title } : {}),
   };
 }
