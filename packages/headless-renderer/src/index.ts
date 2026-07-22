@@ -1,0 +1,336 @@
+/**
+ * Headless renderer for Open Design daemon.
+ *
+ * Provides drop-in replacements for the three desktop-runtime renderers
+ * (desktopArtifactExporter, desktopSlideRenderer, desktopPdfExporter)
+ * using Playwright's headless Chromium instead of Electron.
+ *
+ * The daemon uses these when the desktop runtime is not connected
+ * (headless mode), so `od export --format pdf|image|pptx` works on
+ * servers without a GUI.
+ *
+ * Architecture: each renderer spawns (or reuses) a headless Chromium browser,
+ * loads the HTML via a data: URL (self-contained, no network needed), and
+ * uses page.pdf() / page.screenshot() to produce the output file.
+ */
+
+import { randomBytes } from "node:crypto";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+import type {
+  DesktopExportArtifactInput,
+  DesktopExportArtifactResult,
+  DesktopExportPdfInput,
+  DesktopExportPdfResult,
+  DesktopRenderSlidesInput,
+  DesktopRenderSlidesResult,
+} from "@open-design/sidecar-proto";
+
+// Function types matching the daemon's server.ts definitions
+export type DesktopArtifactExporter = (input: DesktopExportArtifactInput) => Promise<DesktopExportArtifactResult>;
+export type DesktopSlideRenderer = (input: DesktopRenderSlidesInput) => Promise<DesktopRenderSlidesResult>;
+export type DesktopPdfExporter = (input: DesktopExportPdfInput) => Promise<DesktopExportPdfResult>;
+
+// ── Public API ──────────────────────────────────────────────────────────
+
+export interface HeadlessRenderer {
+  artifactExporter: DesktopArtifactExporter;
+  slideRenderer: DesktopSlideRenderer;
+  pdfExporter: DesktopPdfExporter;
+  close: () => Promise<void>;
+}
+
+export async function createHeadlessRenderer(): Promise<HeadlessRenderer> {
+  // Lazy import so the daemon doesn't crash if Playwright is not installed
+  // (e.g. desktop-mode users who don't need headless rendering).
+  const { chromium } = await import("playwright");
+
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
+  });
+
+  async function makePage(width?: number, height?: number) {
+    const page = await browser.newPage({
+      viewport: width && height ? { width, height } : undefined,
+    });
+    return page;
+  }
+
+  /** Load HTML into a page via a self-contained data URL. */
+  async function loadHtml(
+    page: import("playwright").Page,
+    html: string,
+    _baseHref?: string,
+  ): Promise<void> {
+    // data: URLs are self-contained — no external requests needed since the
+    // daemon already inlines CSS/JS via the /export/*inline=1 endpoint.
+    // For the slide renderer, the HTML is already inlined by buildDeckRenderInput.
+    const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+    await page.goto(dataUrl, { waitUntil: "networkidle", timeout: 60_000 });
+  }
+
+  // ── artifactExporter: PDF or single image ──────────────────────────────
+
+  const artifactExporter: DesktopArtifactExporter = async (
+    input: DesktopExportArtifactInput,
+  ): Promise<DesktopExportArtifactResult> => {
+    const page = await makePage(input.width, input.height);
+    try {
+      await loadHtml(page, input.html, input.baseHref);
+
+      if (input.format === "pdf") {
+        const outDir = await mkTempDir();
+        const outPath = join(outDir, `${safeName(input.title)}.pdf`);
+        await page.pdf({
+          format: "A4",
+          printBackground: true,
+          margin: { top: "0", right: "0", bottom: "0", left: "0" },
+          path: outPath,
+          ...(input.width && input.height
+            ? { width: `${input.width}px`, height: `${input.height}px` }
+            : {}),
+        });
+        return { ok: true, path: outPath, mime: "application/pdf" };
+      }
+
+      // image
+      const isJpeg = input.imageFormat === "jpeg";
+      const outDir = await mkTempDir();
+      const outPath = join(outDir, `export.${isJpeg ? "jpg" : "png"}`);
+      await page.screenshot({
+        path: outPath,
+        type: isJpeg ? "jpeg" : "png",
+        fullPage: true,
+      });
+      return {
+        ok: true,
+        path: outPath,
+        mime: isJpeg ? "image/jpeg" : "image/png",
+      };
+    } catch (err: any) {
+      return { ok: false, error: err?.message || String(err) };
+    } finally {
+      await page.close().catch(() => {});
+    }
+  };
+
+  // ── slideRenderer: deck (one image per slide) or full-page ─────────────
+
+  const slideRenderer: DesktopSlideRenderer = async (
+    input: DesktopRenderSlidesInput,
+  ): Promise<DesktopRenderSlidesResult> => {
+    const page = await makePage(
+      input.width ?? 1920,
+      input.height ?? 1080,
+    );
+    try {
+      await loadHtml(page, input.html, input.baseHref);
+
+      // Detect deck vs page mode
+      const slideCount = await page.evaluate(() => {
+        return document.querySelectorAll('.slide').length;
+      });
+
+      const isDeck = input.deck ?? slideCount > 0;
+      const mode: "deck" | "page" = isDeck ? "deck" : "page";
+
+      if (mode === "page") {
+        // Full-page capture
+        const isJpeg = input.pageImageFormat === "jpeg";
+        if (input.paginate) {
+          // Split into viewport-height images (for PDF multi-page)
+          const viewportHeight = input.height ?? 1080;
+          const fullWidth = await page.evaluate(() => document.body.scrollWidth);
+          const fullHeight = await page.evaluate(() => document.body.scrollHeight);
+          const pageCount = Math.ceil(fullHeight / viewportHeight);
+          const slideFiles: string[] = [];
+
+          if (!input.outputDir) {
+            return {
+              ok: false,
+              error: "paginate requires outputDir",
+              errorCode: "RENDER_FAILED",
+            };
+          }
+
+          for (let i = 0; i < pageCount; i++) {
+            const outPath = join(input.outputDir, `page-${i}.${isJpeg ? "jpg" : "png"}`);
+            await page.screenshot({
+              path: outPath,
+              type: isJpeg ? "jpeg" : "png",
+              clip: {
+                x: 0,
+                y: i * viewportHeight,
+                width: fullWidth,
+                height: Math.min(viewportHeight, fullHeight - i * viewportHeight),
+              },
+            });
+            slideFiles.push(outPath);
+          }
+          return {
+            ok: true,
+            mode: "page",
+            slideFiles,
+            width: fullWidth,
+            height: fullHeight,
+          };
+        }
+
+        // Single full-page image
+        if (input.outputDir) {
+          const outPath = join(input.outputDir, `page.${isJpeg ? "jpg" : "png"}`);
+          await page.screenshot({
+            path: outPath,
+            type: isJpeg ? "jpeg" : "png",
+            fullPage: true,
+          });
+          return { ok: true, mode: "page", slideFiles: [outPath] };
+        }
+
+        // No outputDir — return base64
+        const buf = await page.screenshot({
+          type: isJpeg ? "jpeg" : "png",
+          fullPage: true,
+        });
+        return {
+          ok: true,
+          mode: "page",
+          slides: [`data:image/${isJpeg ? "jpeg" : "png"};base64,${buf.toString("base64")}`],
+        };
+      }
+
+      // Deck mode: one image per slide
+      if (slideCount === 0) {
+        return {
+          ok: false,
+          error: "No .slide sections found",
+          errorCode: "NO_SLIDES",
+        };
+      }
+
+      // Determine which slides to render
+      let indices: number[];
+      if (typeof input.index === "number") {
+        if (input.index < 0 || input.index >= slideCount) {
+          return {
+            ok: false,
+            error: `Slide index ${input.index} out of range (0..${slideCount - 1})`,
+            errorCode: "SLIDE_INDEX_OUT_OF_RANGE",
+          };
+        }
+        indices = [input.index];
+      } else {
+        indices = Array.from({ length: slideCount }, (_, i) => i);
+      }
+
+      const slideFiles: string[] = [];
+      const slides: string[] = [];
+
+      for (const idx of indices) {
+        // Show only the requested slide
+        await page.evaluate((i: number) => {
+          const slides = document.querySelectorAll('.slide');
+          slides.forEach((s, n) => {
+            (s as HTMLElement).style.display = n === i ? '' : 'none';
+          });
+        }, idx);
+
+        if (input.outputDir) {
+          const outPath = join(input.outputDir, `slide-${idx}.png`);
+          await page.screenshot({
+            path: outPath,
+            type: "png",
+          });
+          slideFiles.push(outPath);
+        } else {
+          const buf = await page.screenshot({ type: "png" });
+          slides.push(`data:image/png;base64,${buf.toString("base64")}`);
+        }
+      }
+
+      // Stitch if requested (image export of a deck)
+      if (input.stitch && input.outputDir && slideFiles.length > 1) {
+        // For stitching, re-render all slides visible and take a fullPage shot
+        await page.evaluate(() => {
+          document.querySelectorAll('.slide').forEach((s) => {
+            (s as HTMLElement).style.display = '';
+          });
+        });
+        const outPath = join(input.outputDir, "stitched.png");
+        await page.screenshot({ path: outPath, type: "png", fullPage: true });
+        return {
+          ok: true,
+          mode: "deck",
+          slideFiles: [outPath],
+          width: input.width ?? 1920,
+          height: input.height ?? 1080,
+        };
+      }
+
+      return {
+        ok: true,
+        mode: "deck",
+        ...(slideFiles.length > 0 ? { slideFiles } : {}),
+        ...(slides.length > 0 ? { slides } : {}),
+        width: input.width ?? 1920,
+        height: input.height ?? 1080,
+      };
+    } catch (err: any) {
+      return {
+        ok: false,
+        error: err?.message || String(err),
+        errorCode: "RENDER_FAILED",
+      };
+    } finally {
+      await page.close().catch(() => {});
+    }
+  };
+
+  // ── pdfExporter: standalone PDF route ─────────────────────────────────
+
+  const pdfExporter: DesktopPdfExporter = async (
+    input: DesktopExportPdfInput,
+  ): Promise<DesktopExportPdfResult> => {
+    const page = await makePage();
+    try {
+      await loadHtml(page, input.html, input.baseHref);
+      const outDir = await mkTempDir();
+      const outPath = join(outDir, `${safeName(input.defaultFilename)}.pdf`);
+      await page.pdf({
+        format: "A4",
+        printBackground: true,
+        margin: { top: "0", right: "0", bottom: "0", left: "0" },
+        path: outPath,
+      });
+      return { ok: true, path: outPath };
+    } catch (err: any) {
+      return { ok: false, error: err?.message || String(err) };
+    } finally {
+      await page.close().catch(() => {});
+    }
+  };
+
+  return {
+    artifactExporter,
+    slideRenderer,
+    pdfExporter,
+    close: async () => {
+      await browser.close().catch(() => {});
+    },
+  };
+}
+
+// ── Utilities ────────────────────────────────────────────────────────────
+
+function safeName(name: string): string {
+  return (name || "export").replace(/[^a-zA-Z0-9-_]/g, "_").slice(0, 100);
+}
+
+async function mkTempDir(): Promise<string> {
+  const dir = join(tmpdir(), `od-render-${randomBytes(6).toString("hex")}`);
+  await mkdir(dir, { recursive: true });
+  return dir;
+}

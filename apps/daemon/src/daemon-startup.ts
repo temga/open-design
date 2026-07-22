@@ -117,10 +117,39 @@ export async function closeHttpServer(
 
 export async function startDaemonRuntime(options: DaemonRuntimeOptions = {}): Promise<StartedDaemonRuntime> {
   const { openBrowser: shouldOpenBrowser = false, logListening = false, ...serverOptions } = options;
+
+  // Headless fallback: if no desktop renderers were injected (headless mode),
+  // try to use the Playwright-based headless renderer so `od export` works
+  // without the desktop runtime. This is a lazy import — if the package or
+  // Playwright is not available, we silently fall back to the original
+  // behaviour (renderers stay null, export returns 501).
+  let headlessRenderer: Awaited<ReturnType<typeof import('@open-design/headless-renderer').createHeadlessRenderer>> | null = null;
+  if (
+    serverOptions.desktopArtifactExporter == null &&
+    serverOptions.desktopSlideRenderer == null &&
+    serverOptions.desktopPdfExporter == null
+  ) {
+    try {
+      const { createHeadlessRenderer } = await import('@open-design/headless-renderer');
+      headlessRenderer = await createHeadlessRenderer();
+      // eslint-disable-next-line no-console
+      console.info('[od] headless renderer (Playwright) active — export will use it');
+    } catch (err: any) {
+      // Not fatal — the daemon still runs, just without export capability.
+      // eslint-disable-next-line no-console
+      console.info(`[od] headless renderer unavailable: ${err?.message || String(err)}`);
+    }
+  }
+
   const { startServer } = await import('./server.js');
   const started = await startServer({
     ...serverOptions,
     returnServer: true,
+    ...(headlessRenderer ? {
+      desktopArtifactExporter: headlessRenderer.artifactExporter,
+      desktopSlideRenderer: headlessRenderer.slideRenderer,
+      desktopPdfExporter: headlessRenderer.pdfExporter,
+    } : {}),
   }) as string | StartedServer;
   if (typeof started === 'string') {
     throw new Error('daemon startServer did not return a server handle');
@@ -131,7 +160,10 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions = {}): Pr
     const shutdownPromise = started.shutdown?.().catch((error: unknown) => {
       console.error('daemon shutdown cleanup failed', error);
     }) ?? Promise.resolve();
-    await Promise.allSettled([shutdownPromise, closePromise]);
+    const headlessClosePromise = headlessRenderer?.close().catch((error: unknown) => {
+      console.error('headless renderer close failed', error);
+    }) ?? Promise.resolve();
+    await Promise.allSettled([shutdownPromise, closePromise, headlessClosePromise]);
   };
 
   if (logListening) {

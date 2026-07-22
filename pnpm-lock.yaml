@@ -68,6 +68,9 @@ importers:
       '@open-design/diagnostics':
         specifier: workspace:*
         version: link:../../packages/diagnostics
+      '@open-design/headless-renderer':
+        specifier: workspace:*
+        version: link:../../packages/headless-renderer
       '@open-design/launcher-proto':
         specifier: workspace:*
         version: link:../../packages/launcher-proto
@@ -624,6 +627,19 @@ importers:
       vitest:
         specifier: 4.1.6
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.2)(jsdom@29.1.1)(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.22.3)(yaml@2.9.0))
+
+  packages/headless-renderer:
+    dependencies:
+      '@open-design/sidecar-proto':
+        specifier: workspace:*
+        version: link:../sidecar-proto
+      playwright:
+        specifier: ^1.60.0
+        version: 1.60.0
+    devDependencies:
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
 
   packages/host:
     dependencies:
