@@ -129,9 +129,14 @@ export async function createHeadlessRenderer(): Promise<HeadlessRenderer> {
     try {
       await loadHtml(page, input.html, input.baseHref);
 
-      // Detect deck vs page mode
+      // Detect deck vs page mode — use the same selector as the desktop renderer
+      // so slides revealed via [data-screen-label], .deck-slide, or .ppt-slide
+      // are counted, and presenter clones / thumbnails are excluded.
       const slideCount = await page.evaluate(() => {
-        return document.querySelectorAll('.slide').length;
+        return Array.prototype.slice
+          .call(document.querySelectorAll('.slide, [data-screen-label], .deck-slide, .ppt-slide'))
+          .filter((el) => !(el as HTMLElement).closest('.mini-slide, .overview, .notes-overlay, .thumb'))
+          .length;
       });
 
       const isDeck = input.deck ?? slideCount > 0;
@@ -230,11 +235,28 @@ export async function createHeadlessRenderer(): Promise<HeadlessRenderer> {
       const slides: string[] = [];
 
       for (const idx of indices) {
-        // Show only the requested slide
+        // Reveal slide — mirror the desktop renderer's showSlide() logic:
+        // toggle active classes + attributes + inline !important overrides
+        // so the slide is visible regardless of how the deck hides inactive ones.
+        // Use the same expanded selector as the desktop renderer.
         await page.evaluate((i: number) => {
-          const slides = document.querySelectorAll('.slide');
-          slides.forEach((s, n) => {
-            (s as HTMLElement).style.display = n === i ? '' : 'none';
+          const slides = Array.prototype.slice
+            .call(document.querySelectorAll('.slide, [data-screen-label], .deck-slide, .ppt-slide'))
+            .filter((el) => !(el as HTMLElement).closest('.mini-slide, .overview, .notes-overlay, .thumb'));
+          const activeClasses = ["active", "visible", "is-active", "current"];
+          const activeAttributes = ["data-od-deck-active"];
+          slides.forEach((node, n) => {
+            const el = node as HTMLElement;
+            const on = n === i;
+            el.style.setProperty("transition", "none", "important");
+            el.style.setProperty("animation", "none", "important");
+            el.style.setProperty("opacity", on ? "1" : "0", "important");
+            el.style.setProperty("visibility", on ? "visible" : "hidden", "important");
+            el.style.setProperty("display", on ? "flex" : "none", "important");
+            el.style.setProperty("pointer-events", on ? "auto" : "none", "important");
+            el.style.setProperty("z-index", on ? "999" : "0", "important");
+            activeClasses.forEach((c) => el.classList.toggle(c, on));
+            activeAttributes.forEach((a) => el.toggleAttribute(a, on));
           });
         }, idx);
 
@@ -253,10 +275,24 @@ export async function createHeadlessRenderer(): Promise<HeadlessRenderer> {
 
       // Stitch if requested (image export of a deck)
       if (input.stitch && input.outputDir && slideFiles.length > 1) {
-        // For stitching, re-render all slides visible and take a fullPage shot
+        // For stitching, reveal all slides stacked vertically and take a fullPage shot
         await page.evaluate(() => {
-          document.querySelectorAll('.slide').forEach((s) => {
-            (s as HTMLElement).style.display = '';
+          const slides = Array.prototype.slice
+            .call(document.querySelectorAll('.slide, [data-screen-label], .deck-slide, .ppt-slide'))
+            .filter((el) => !(el as HTMLElement).closest('.mini-slide, .overview, .notes-overlay, .thumb'));
+          const activeClasses = ["active", "visible", "is-active", "current"];
+          const activeAttributes = ["data-od-deck-active"];
+          slides.forEach((node) => {
+            const el = node as HTMLElement;
+            el.style.setProperty("transition", "none", "important");
+            el.style.setProperty("animation", "none", "important");
+            el.style.setProperty("opacity", "1", "important");
+            el.style.setProperty("visibility", "visible", "important");
+            el.style.setProperty("display", "flex", "important");
+            el.style.setProperty("position", "relative", "important");
+            el.style.setProperty("z-index", "999", "important");
+            activeClasses.forEach((c) => el.classList.add(c));
+            activeAttributes.forEach((a) => el.setAttribute(a, ""));
           });
         });
         const outPath = join(input.outputDir, "stitched.png");
