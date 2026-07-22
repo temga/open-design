@@ -288,7 +288,20 @@ export async function createHeadlessRenderer(): Promise<HeadlessRenderer> {
             activeClasses.forEach((c) => el.classList.toggle(c, on));
             activeAttributes.forEach((a) => el.toggleAttribute(a, on));
           });
+          // Also force all .anim elements in the active slide to opacity:1,
+          // bypassing the js-anim gate (which hides them at opacity:0 until
+          // the deck runtime triggers staggered entrance animations).
+          const active = slides[i] as HTMLElement | undefined;
+          if (active) {
+            active.querySelectorAll('.anim').forEach((el) => {
+              (el as HTMLElement).style.setProperty("opacity", "1", "important");
+              (el as HTMLElement).style.setProperty("transform", "none", "important");
+              (el as HTMLElement).style.setProperty("transition", "none", "important");
+            });
+          }
         }, idx);
+        // Wait one animation frame for the DOM to settle after the style overrides.
+        await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 
         if (input.outputDir) {
           const outPath = join(input.outputDir, `slide-${idx}.png`);
