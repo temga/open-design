@@ -15,7 +15,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile, writeFile as fsWriteFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -54,22 +54,32 @@ export async function createHeadlessRenderer(): Promise<HeadlessRenderer> {
 
   async function makePage(width?: number, height?: number) {
     const page = await browser.newPage({
-      viewport: width && height ? { width, height } : undefined,
+      viewport: { width: width ?? 1920, height: height ?? 1080 },
     });
     return page;
   }
 
-  /** Load HTML into a page via a self-contained data URL. */
+  /** Load HTML into a page with a <base> tag so relative asset URLs resolve
+   *  against the daemon's raw-file endpoint, not the data: URL. */
   async function loadHtml(
     page: import("playwright").Page,
     html: string,
-    _baseHref?: string,
+    baseHref?: string,
   ): Promise<void> {
-    // data: URLs are self-contained — no external requests needed since the
-    // daemon already inlines CSS/JS via the /export/*inline=1 endpoint.
-    // For the slide renderer, the HTML is already inlined by buildDeckRenderInput.
-    const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
-    await page.goto(dataUrl, { waitUntil: "networkidle", timeout: 60_000 });
+    let finalHtml = html;
+    if (baseHref) {
+      // Inject <base> tag as the desktop renderer does, so relative paths
+      // (images, fonts, CSS) resolve against the daemon's raw endpoint.
+      const escaped = baseHref.replace(/"/g, "&quot;");
+      finalHtml = html.replace(
+        /<head([^>]*)>/i,
+        `<head$1><base href="${escaped}">`,
+      );
+    }
+    await page.setContent(finalHtml, {
+      waitUntil: "networkidle",
+      timeout: 60_000,
+    });
   }
 
   // ── artifactExporter: PDF or single image ──────────────────────────────
@@ -148,9 +158,13 @@ export async function createHeadlessRenderer(): Promise<HeadlessRenderer> {
         if (input.paginate) {
           // Split into viewport-height images (for PDF multi-page)
           const viewportHeight = input.height ?? 1080;
-          const fullWidth = await page.evaluate(() => document.body.scrollWidth);
-          const fullHeight = await page.evaluate(() => document.body.scrollHeight);
-          const pageCount = Math.ceil(fullHeight / viewportHeight);
+          const dims = await page.evaluate(() => ({
+            w: document.documentElement.scrollWidth || document.body.scrollWidth || window.innerWidth,
+            h: document.documentElement.scrollHeight || document.body.scrollHeight || window.innerHeight,
+          }));
+          const fullWidth = Math.max(dims.w, 1);
+          const fullHeight = Math.max(dims.h, 1);
+          const pageCount = Math.max(1, Math.ceil(fullHeight / viewportHeight));
           const slideFiles: string[] = [];
 
           if (!input.outputDir) {
@@ -162,17 +176,33 @@ export async function createHeadlessRenderer(): Promise<HeadlessRenderer> {
           }
 
           for (let i = 0; i < pageCount; i++) {
+            const clipHeight = Math.min(viewportHeight, fullHeight - i * viewportHeight);
+            if (clipHeight <= 0) break;
             const outPath = join(input.outputDir, `page-${i}.${isJpeg ? "jpg" : "png"}`);
-            await page.screenshot({
-              path: outPath,
+            // Scroll to the clip position so the content is rendered before capture.
+            await page.evaluate((y: number) => window.scrollTo(0, y), i * viewportHeight);
+            // Use fullPage screenshot then crop — clip fails on some pages
+            // where the document layout doesn't match the clip coordinates.
+            const buf = await page.screenshot({
               type: isJpeg ? "jpeg" : "png",
-              clip: {
-                x: 0,
-                y: i * viewportHeight,
-                width: fullWidth,
-                height: Math.min(viewportHeight, fullHeight - i * viewportHeight),
-              },
+              fullPage: true,
             });
+            // Crop the viewport slice from the full-page screenshot using sharp
+            // (available in the daemon's dependency tree) — avoids Playwright
+            // clip coordinate issues with absolutely-positioned content.
+            const sharpMod = await import("sharp");
+            const sharpFn = (sharpMod as any).default ?? sharpMod;
+            const cropped = await sharpFn(buf)
+              .extract({
+                left: 0,
+                top: i * viewportHeight,
+                width: Math.round(fullWidth),
+                height: Math.round(clipHeight),
+              })
+              .toFormat(isJpeg ? "jpeg" : "png")
+              .toBuffer();
+            await mkdir(input.outputDir, { recursive: true });
+            await fsWriteFile(outPath, cropped);
             slideFiles.push(outPath);
           }
           return {
