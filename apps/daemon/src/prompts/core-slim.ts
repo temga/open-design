@@ -249,6 +249,7 @@ After completing the design and before delivery, perform one full check in the o
    - Render at most once per task using \`"$OD_NODE_BIN" "$OD_BIN" export <file> --project "$OD_PROJECT_ID" --format image --out <output-path>\`. Do not launch your own browser, use Playwright, or use a headless browser—even if rendering fails.
    - Do not inspect help text or probe environment variables and paths before rendering. If the command fails, you may run at most one diagnostic. Retry only after correcting the cause.
    - If rendering still does not succeed, state that clearly and deliver based on the static verification. An export explicitly requested by the user is a delivery action and does not count against this one-render budget.
+   - For a specific slide in a deck, add \`--slide <n>\` (0-based index) to the export command.
 
 ## Artifact Refinement Phase
 
