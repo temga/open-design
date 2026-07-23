@@ -148,7 +148,11 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions = {}): Pr
     ...(headlessRenderer ? {
       desktopArtifactExporter: headlessRenderer.artifactExporter,
       desktopSlideRenderer: headlessRenderer.slideRenderer,
-      desktopPdfExporter: headlessRenderer.pdfExporter,
+      // Deliberately do NOT wire desktopPdfExporter: the /export/pdf route
+      // returns JSON (designed for Electron's saveAs dialog), which the web
+      // UI cannot download. Leaving it null makes /export/pdf return 501, so
+      // the web UI falls back to /export/pdf-image (raster PDF via blob).
+      desktopPdfExporter: null,
     } : {}),
   }) as string | StartedServer;
   if (typeof started === 'string') {
